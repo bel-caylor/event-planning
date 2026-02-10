@@ -1,10 +1,10 @@
-# Prototype Server
+# Contract Harness (Node/Express)
 
-This repository now contains a small Express-based BFF that proves the contracts laid out in `docs/api-contract.md`.
+This repository contains a small Express-based harness that proves the contracts laid out in `docs/api-contract.md`. The WordPress plugin is the source of truth; this harness is strictly for contract verification.
 
 ## Source
-- `src/server.js` implements the `POST /signups` flow with validation, conflict snapshots, and the canonical availability shape described in the contract.
-- `package.json` declares `express`, `uuid`, and `nodemon` so contributors can run the prototype locally.
+- `src/app.js` implements the `POST /signups` flow with validation, conflict snapshots, and the canonical availability shape described in the contract.
+- `package.json` declares `express`, `uuid`, and `nodemon` so contributors can run the harness locally.
 
 ## Running locally
 1. `npm install`  
