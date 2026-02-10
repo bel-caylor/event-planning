@@ -126,6 +126,25 @@ const createApp = () => {
       return res.status(422).json(validationError(fieldErrors));
     }
 
+    const identityKey = isWpUser
+      ? `wp:${req.headers['x-wp-user-id']}`
+      : `guest:${guest.email.toLowerCase()}`;
+
+    const existingSignup = state.signups.find(
+      (signup) =>
+        signup.slot_id === slot_id && signup.identity_key === identityKey
+    );
+
+    if (existingSignup) {
+      return res.status(200).json({
+        data: {
+          signup: existingSignup,
+          availability: availabilitySnapshot(slot.id)
+        },
+        errors: []
+      });
+    }
+
     if (slot.locked) {
       return res.status(403).json({
         errors: [
@@ -184,6 +203,7 @@ const createApp = () => {
       slot_id: slot.id,
       qty,
       identity_type: identityType,
+      identity_key: identityKey,
       status: 'confirmed',
       can_edit: true,
       can_cancel: true,

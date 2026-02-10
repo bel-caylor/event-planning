@@ -149,6 +149,18 @@ Error responses must include:
 
 ---
 
+## 🔬 Prototype Contract Server (Node/Express)
+
+This repository includes a small Express-based prototype server used to **prove and test** the API contracts defined in `docs/api-contract.md`.
+
+- The prototype exists solely as a **contract verification harness**
+- It demonstrates validation, conflict handling, canonical availability snapshots, and idempotency
+- It is **not production code** and does **not replace** the WordPress plugin as the Source of Truth
+
+See `docs/server.md` for details on the prototype server and `tests/` for contract coverage.
+
+---
+
 ## 🗺 Future Documentation
 
 Planned additions:

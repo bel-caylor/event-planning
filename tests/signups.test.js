@@ -93,4 +93,28 @@ describe('POST /signups', () => {
     expect(response.body.errors[0].code).toBe('CUTOFF_PASSED');
     expect(response.body.snapshot).toHaveProperty('availability.reason', 'cutoff_passed');
   });
+
+  it('is idempotent for duplicate signup attempts', async () => {
+    await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: 'a@b.com', name: 'A B' }
+    });
+
+    const response = await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: 'a@b.com', name: 'A B' }
+    });
+
+    expect(response.status).toBe(200);
+    expect(state.signups).toHaveLength(1);
+    expect(response.body.data.availability.remaining).toBe(4);
+    expect(response.body.data.signup).toMatchObject({
+      slot_id: 12,
+      identity_type: 'guest',
+      qty: 1
+    });
+  });
+
 });

@@ -7,8 +7,10 @@ This repository now contains a small Express-based BFF that proves the contracts
 - `package.json` declares `express`, `uuid`, and `nodemon` so contributors can run the prototype locally.
 
 ## Running locally
-1. `npm install` (currently this repository cannot reach `registry.npmjs.org`, so the install step will fail with `ENOTCACHED` unless you have the packages cached or restore network access).
+1. `npm install`  
+   > Note: If your environment restricts access to the npm registry, installs may fail unless dependencies are already cached.
 2. `npm start` to launch the service on port `4000` (set `PORT` to override).
+
 
 ## Contract coverage
 - Accepts `slot_id`, `qty`, and `guest` while distinguishing guests from WP users via the `x-wp-user-id` header.
