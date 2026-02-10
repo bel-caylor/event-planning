@@ -22,6 +22,11 @@ const state = {
   signups: []
 };
 
+const EVENT_INFO = {
+  id: 1,
+  name: 'Event Planning Demo'
+};
+
 const resetState = () => {
   state.slots = createDefaultSlots();
   state.signups = [];
@@ -69,6 +74,53 @@ const availabilitySnapshot = (slotId, overrides = {}) => {
   };
 };
 
+const resolveIdentityKey = (req, { requireGuestEmail = false } = {}) => {
+  const wpUserId = req.headers['x-wp-user-id'];
+  if (wpUserId) {
+    return {
+      identityKey: `wp:${wpUserId}`,
+      identityType: 'wp_user',
+      missingGuestEmail: false
+    };
+  }
+
+  const guestEmail = (req.body?.guest?.email ?? req.query?.guest_email ?? '').trim();
+  if (!guestEmail) {
+    return {
+      identityKey: null,
+      identityType: 'guest',
+      missingGuestEmail: requireGuestEmail
+    };
+  }
+
+  return {
+    identityKey: `guest:${guestEmail.toLowerCase()}`,
+    identityType: 'guest',
+    missingGuestEmail: false
+  };
+};
+
+const buildEventSnapshot = (identityKey) => {
+  const slots = Array.from(state.slots.values()).map((slot) => ({
+    ...slot,
+    availability: availabilitySnapshot(slot.id)
+  }));
+
+  return {
+    data: {
+      event: {
+        id: EVENT_INFO.id,
+        name: EVENT_INFO.name,
+        slots
+      },
+      my_signups: identityKey
+        ? state.signups.filter((signup) => signup.identity_key === identityKey)
+        : []
+    },
+    errors: []
+  };
+};
+
 const validationError = (fieldErrors) => {
   return {
     errors: [
@@ -80,20 +132,6 @@ const validationError = (fieldErrors) => {
       }
     ]
   };
-};
-
-const getIdentityKey = (req) => {
-  const isWpUser = Boolean(req.headers['x-wp-user-id']);
-  if (isWpUser) {
-    return `wp:${req.headers['x-wp-user-id']}`;
-  }
-
-  const guestEmail = req.body?.guest?.email;
-  if (!guestEmail) {
-    return null;
-  }
-
-  return `guest:${guestEmail.toLowerCase()}`;
 };
 
 const createApp = () => {
@@ -235,9 +273,40 @@ const createApp = () => {
     });
   });
 
+  app.get('/events/:eventId', (req, res) => {
+    const eventId = Number(req.params.eventId);
+    if (eventId !== EVENT_INFO.id) {
+      return res.status(404).json({
+        errors: [
+          {
+            code: 'EVENT_NOT_FOUND',
+            message: 'Event not found.',
+            details: {},
+            retryable: false
+          }
+        ]
+      });
+    }
+
+    const identity = resolveIdentityKey(req);
+    const response = buildEventSnapshot(identity.identityKey);
+    return res.status(200).json(response);
+  });
+
+
   app.post('/signups/:signupId/cancel', (req, res) => {
     const { signupId } = req.params;
-    const identityKey = getIdentityKey(req);
+    const identity = resolveIdentityKey(req, { requireGuestEmail: true });
+
+    if (!identity.identityKey) {
+      return res.status(422).json(
+        validationError({
+          email: 'guest.email is required for unauthenticated requests'
+        })
+      );
+    }
+
+    const identityKey = identity.identityKey;
 
     if (!identityKey) {
       return res.status(422).json(validationError({

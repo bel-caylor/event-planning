@@ -16,6 +16,7 @@ This repository contains a small Express-based harness that proves the contracts
 - Accepts `slot_id`, `qty`, and `guest` while distinguishing guests from WP users via the `x-wp-user-id` header.
 - Returns `200 OK` with the committed signup and the updated availability snapshot, `409 Conflict` whenever a slot is full, `422 Unprocessable Entity` for validation failures, and `403 Forbidden` when the slot is locked or past its cutoff.
 - Every non-2xx response that tracks availability includes a `snapshot` object so the frontend can discard stale assumptions.
+- Serves `GET /events/1` so the frontend can fetch event metadata, canonical availability per slot, and the `my_signups` slice for the calling identity.
 
 ## Data model
 - Slots are stored in memory with a single example slot (`id: 12`, capacity `10`, max `qty: 3`, five remaining).

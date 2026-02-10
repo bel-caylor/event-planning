@@ -173,3 +173,50 @@ describe('WP POST /event-planning/v1/signups (contract)', () => {
         expect(response.body.errors[0].code).toBe('SIGNUP_NOT_FOUND');
     });
 });
+
+describe('GET /event-planning/v1/events/:eventId (contract)', () => {
+    beforeEach(async () => {
+        if (!DEV_SECRET) throw new Error('EP_DEV_SECRET is required for dev endpoints');
+
+        await request(WP_BASE)
+            .post('/wp-json/event-planning/v1/dev/reset')
+            .set('x-ep-dev-secret', DEV_SECRET)
+            .send({});
+    });
+
+    it('returns the event snapshot with canonical slot availability', async () => {
+        const response = await request(WP_BASE)
+            .get('/wp-json/event-planning/v1/events/1');
+
+        expect(response.status).toBe(200);
+        expect(response.body.errors).toEqual([]);
+        expect(response.body.data.event.id).toBe(1);
+        expect(response.body.data.event.slots[0].id).toBe(12);
+        expect(response.body.data.event.slots[0].availability.remaining).toBe(5);
+        expect(response.body.data.my_signups).toEqual([]);
+    });
+
+    it('includes my signups for the guest identity in the query', async () => {
+        await request(WP_BASE).post(SIGNUPS).send({
+            slot_id: 12,
+            qty: 1,
+            guest: { email: 'reader@example.com', name: 'Reader' }
+        });
+
+        const response = await request(WP_BASE)
+            .get('/wp-json/event-planning/v1/events/1')
+            .query({ guest_email: 'reader@example.com' });
+
+        expect(response.status).toBe(200);
+        expect(response.body.data.event.slots[0].availability.remaining).toBe(4);
+        expect(response.body.data.my_signups).toHaveLength(1);
+        expect(response.body.data.my_signups[0].identity_key).toContain('guest:reader@example.com');
+    });
+
+    it('returns 404 when the event id is invalid', async () => {
+        const response = await request(WP_BASE).get('/wp-json/event-planning/v1/events/999');
+
+        expect(response.status).toBe(404);
+        expect(response.body.errors[0].code).toBe('EVENT_NOT_FOUND');
+    });
+});

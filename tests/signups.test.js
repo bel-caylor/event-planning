@@ -183,3 +183,50 @@ describe('POST /signups', () => {
   });
 
 });
+
+describe('GET /events/:eventId', () => {
+  let app;
+
+  beforeEach(() => {
+    resetState();
+    app = createApp();
+  });
+
+  it('returns the event snapshot with canonical slot availability', async () => {
+    const response = await request(app).get('/events/1');
+
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toEqual([]);
+    expect(response.body.data.event.id).toBe(1);
+    expect(response.body.data.event.slots).toHaveLength(1);
+    const slot = response.body.data.event.slots[0];
+    expect(slot.id).toBe(12);
+    expect(slot.availability.remaining).toBe(5);
+    expect(response.body.data.my_signups).toEqual([]);
+  });
+
+  it('returns my signups when guest identity is provided', async () => {
+    const guestEmail = 'reader@example.com';
+    await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: guestEmail, name: 'Reader' }
+    });
+
+    const response = await request(app)
+      .get('/events/1')
+      .query({ guest_email: guestEmail });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.my_signups).toHaveLength(1);
+    expect(response.body.data.my_signups[0].identity_key).toBe(`guest:${guestEmail}`);
+    expect(response.body.data.event.slots[0].availability.remaining).toBe(4);
+  });
+
+  it('returns 404 when the event id is unknown', async () => {
+    const response = await request(app).get('/events/999');
+
+    expect(response.status).toBe(404);
+    expect(response.body.errors[0].code).toBe('EVENT_NOT_FOUND');
+  });
+});

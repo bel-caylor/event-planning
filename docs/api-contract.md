@@ -89,6 +89,59 @@ Supports both **guest users** and **authenticated WordPress users**.
 
 ---
 
+## Endpoint: Event Snapshot
+
+### `GET /events/{id}`
+
+Fetch the current event, all slots with their canonical availability, and the “my signups” slice for the identity that made the request. WordPress users rely on the authenticated session; guests must supply their identifying email via the `guest_email` query parameter.
+
+### Request
+
+#### Headers
+- `x-wp-user-id` (automatic when the request originates from WordPress)
+
+#### Query
+- `guest_email` (optional for guests; ignored for authenticated users)
+
+### Success Response
+
+#### `200 OK`
+
+```json
+{
+  "data": {
+    "event": {
+      "id": 1,
+      "name": "Event Planning Demo",
+      "slots": [
+        {
+          "id": 12,
+          "remaining": 5,
+          "maxQty": 3,
+          "locked": false,
+          "availability": {
+            "slot_id": 12,
+            "remaining": 5,
+            "can_signup": true,
+            "reason": null
+          }
+        }
+      ]
+    },
+    "my_signups": []
+  },
+  "errors": []
+}
+```
+
+- Every slot entry mirrors the server-owned slot data plus an `availability` snapshot.
+- `my_signups` contains the canonical signups (confirmed or canceled) for the current identity.
+- Guests should send `guest_email` so the backend can resolve their identity; if it’s missing, `my_signups` stays empty.
+
+### Error Responses
+
+- `404 EVENT_NOT_FOUND` — The requested event ID does not exist (rare in v1, but included for completeness).
+
 ## Conflict Response
 
 ### `409 Conflict`

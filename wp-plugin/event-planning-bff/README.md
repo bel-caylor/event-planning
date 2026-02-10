@@ -8,6 +8,7 @@ This lightweight WordPress plugin implements the Event Planning BFF contract dir
 - Uses the current WordPress user when authenticated, otherwise treats the request as a guest signup.
 - Returns canonical availability snapshots and capability flags per `docs/api-contract.md`.
 - Includes dev-only endpoints for contract testing when running in `local` or `development` environments.
+- Provides `GET /wp-json/event-planning/v1/events/1` so the frontend can fetch the latest event + slot snapshots and the calling identity's `my_signups` slice (`guest_email` query param is honored for unauthenticated users).
 
 ## Configuration
 

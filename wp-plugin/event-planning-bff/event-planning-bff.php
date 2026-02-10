@@ -16,6 +16,8 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 		const SLOTS_OPTION          = 'event_planning_slots';
 		const SIGNUPS_OPTION        = 'event_planning_signups';
 		const BFF_USER_HEADER       = 'x-wp-user-id';
+		const EVENT_ID             = 1;
+		const EVENT_NAME           = 'Event Planning Demo';
 
 		final public static function init() {
 			add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
@@ -26,9 +28,9 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				self::REST_NAMESPACE,
 				self::SIGNUPS_ROUTE,
 				[
-					'methods'             => 'POST',
-					'callback'            => [ __CLASS__, 'handle_signup' ],
-					'permission_callback' => [ __CLASS__, 'has_permission' ],
+				'methods'             => 'POST',
+				'callback'            => [ __CLASS__, 'handle_signup' ],
+				'permission_callback' => [ __CLASS__, 'has_permission' ],
 				]
 			);
 
@@ -38,6 +40,16 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				[
 					'methods'             => 'POST',
 					'callback'            => [ __CLASS__, 'handle_cancel' ],
+					'permission_callback' => [ __CLASS__, 'has_permission' ],
+				]
+			);
+
+			register_rest_route(
+				self::REST_NAMESPACE,
+				'/events/(?P<event_id>\d+)',
+				[
+					'methods'             => 'GET',
+					'callback'            => [ __CLASS__, 'handle_event_snapshot' ],
 					'permission_callback' => [ __CLASS__, 'has_permission' ],
 				]
 			);
@@ -133,6 +145,27 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 			return true;
 		}
 
+		private static function resolve_identity_key( WP_REST_Request $request, bool $require_guest_email = false ) {
+			$user_id = get_current_user_id();
+			if ( $user_id > 0 ) {
+				return 'wp:' . $user_id;
+			}
+
+			$guest_email = $request->get_param( 'guest_email' );
+			if ( ! $guest_email ) {
+				$body        = $request->get_json_params();
+				$guest_email = $body['guest']['email'] ?? '';
+			}
+
+			$guest_email = strtolower( trim( (string) $guest_email ) );
+
+			if ( '' === $guest_email ) {
+				return $require_guest_email ? false : null;
+			}
+
+			return 'guest:' . $guest_email;
+		}
+
 		final public static function handle_signup( WP_REST_Request $request ) {
 			$body     = $request->get_json_params();
 			$slot_id  = isset( $body['slot_id'] ) ? (int) $body['slot_id'] : null;
@@ -215,19 +248,54 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 			return $response;
 		}
 
-		final public static function handle_cancel( WP_REST_Request $request ) {
-			$signup_id = $request['signup_id'];
-			$body      = $request->get_json_params();
+		final public static function handle_event_snapshot( WP_REST_Request $request ) {
+			$event_id = (int) $request['event_id'];
+			if ( $event_id !== self::EVENT_ID ) {
+				return self::error_response( 404, 'EVENT_NOT_FOUND', 'Event not found.', [] );
+			}
 
-			$is_wp = get_current_user_id() > 0;
-			if ( $is_wp ) {
-				$identity_key = 'wp:' . get_current_user_id();
-			} else {
-				$guest_email = isset( $body['guest']['email'] ) ? strtolower( $body['guest']['email'] ) : '';
-				if ( ! $guest_email ) {
-					return self::error_response( 422, 'VALIDATION_FAILED', 'guest.email is required for unauthenticated requests', [ 'email' => 'guest.email is required for unauthenticated requests' ] );
+			$slots = [];
+			foreach ( self::get_slots() as $slot ) {
+				$slots[] = array_merge(
+					$slot,
+					[
+						'availability' => self::availability_snapshot( $slot['id'] ),
+					]
+				);
+			}
+
+			$identity_key = self::resolve_identity_key( $request );
+			$my_signups   = [];
+
+			if ( $identity_key ) {
+				foreach ( self::get_signups() as $signup ) {
+					if ( $signup['identity_key'] === $identity_key ) {
+						$my_signups[] = $signup;
+					}
 				}
-				$identity_key = 'guest:' . $guest_email;
+			}
+
+			return rest_ensure_response(
+				[
+					'data' => [
+						'event'      => [
+							'id'    => self::EVENT_ID,
+							'name'  => self::EVENT_NAME,
+							'slots' => $slots,
+						],
+						'my_signups' => $my_signups,
+					],
+					'errors' => [],
+				]
+			);
+		}
+
+		final public static function handle_cancel( WP_REST_Request $request ) {
+			$signup_id    = $request['signup_id'];
+			$identity_key = self::resolve_identity_key( $request, true );
+
+			if ( false === $identity_key ) {
+				return self::error_response( 422, 'VALIDATION_FAILED', 'guest.email is required for unauthenticated requests', [ 'email' => 'guest.email is required for unauthenticated requests' ] );
 			}
 
 			$signups = self::get_signups();

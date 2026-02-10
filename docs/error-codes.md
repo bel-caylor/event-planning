@@ -80,6 +80,8 @@ All non-2xx responses should use this envelope:
 | SIGNUP_NOT_FOUND | Signup does not exist | Show 404 or “already removed” state |
 | RESOURCE_GONE | Resource removed (soft delete) | Show “no longer available” state |
 
+`EVENT_NOT_FOUND` is also emitted by `GET /events/{id}` when the requested ID does not resolve to a known event.
+
 `SIGNUP_NOT_FOUND` is also returned by `POST /signups/{id}/cancel` when the ID is invalid.
 
 ### Conflicts & Concurrency (409)
