@@ -13,14 +13,117 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 	class Event_Planning_BFF {
 		const REST_NAMESPACE        = 'event-planning/v1';
 		const SIGNUPS_ROUTE         = '/signups';
-		const SLOTS_OPTION          = 'event_planning_slots';
-		const SIGNUPS_OPTION        = 'event_planning_signups';
 		const BFF_USER_HEADER       = 'x-wp-user-id';
 		const EVENT_ID             = 1;
 		const EVENT_NAME           = 'Event Planning Demo';
+		const SCHEMA_VERSION        = '1.1.0';
+		const SCHEMA_OPTION         = 'event_planning_schema_version';
 
 		final public static function init() {
 			add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
+			add_action( 'admin_init', [ __CLASS__, 'maybe_upgrade_schema' ] );
+		}
+
+		final public static function activate() {
+			self::maybe_upgrade_schema();
+		}
+
+		private static function maybe_upgrade_schema() {
+			$installed = get_option( self::SCHEMA_OPTION, '0' );
+			if ( version_compare( $installed, self::SCHEMA_VERSION, '>=' ) ) {
+				return;
+			}
+
+			global $wpdb;
+			require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+			$charset_collate = $wpdb->get_charset_collate();
+
+			if ( version_compare( $installed, '1.0.0', '<' ) ) {
+				self::create_base_schema( $charset_collate );
+			}
+
+			if ( version_compare( $installed, '1.1.0', '<' ) ) {
+				self::add_slot_timezone_column();
+			}
+
+			update_option( self::SCHEMA_OPTION, self::SCHEMA_VERSION );
+		}
+
+		private static function create_base_schema( $charset_collate ) {
+			global $wpdb;
+
+			$slots_table   = self::slots_table();
+			$signups_table = self::signups_table();
+
+			$sql = "
+CREATE TABLE {$slots_table} (
+	id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+	event_id BIGINT(20) UNSIGNED NULL,
+	capacity INT UNSIGNED NOT NULL,
+	remaining INT UNSIGNED NOT NULL,
+	max_qty INT UNSIGNED NULL,
+	locked TINYINT(1) NOT NULL DEFAULT 0,
+	cutoff_at DATETIME NULL,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	PRIMARY KEY  (id),
+	KEY event_id (event_id)
+) {$charset_collate};
+
+CREATE TABLE {$signups_table} (
+	id CHAR(36) NOT NULL,
+	slot_id BIGINT(20) UNSIGNED NOT NULL,
+	identity_type VARCHAR(20) NOT NULL,
+	identity_key VARCHAR(190) NOT NULL,
+	qty INT UNSIGNED NOT NULL,
+	status VARCHAR(20) NOT NULL,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	PRIMARY KEY  (id),
+	UNIQUE KEY slot_identity_status (slot_id, identity_key, status),
+	KEY slot_id (slot_id),
+	KEY identity_key (identity_key)
+) {$charset_collate};
+";
+
+			dbDelta( $sql );
+		}
+
+		private static function add_slot_timezone_column() {
+			global $wpdb;
+			$table = self::slots_table();
+			if ( self::column_exists( $table, 'timezone' ) ) {
+				return;
+			}
+
+			$wpdb->query(
+				"ALTER TABLE {$table} ADD COLUMN timezone VARCHAR(64) NULL AFTER cutoff_at;"
+			);
+		}
+
+		private static function column_exists( $table, $column ) {
+			global $wpdb;
+			$column = $wpdb->get_row(
+				$wpdb->prepare(
+					"SHOW COLUMNS FROM {$table} LIKE %s",
+					$column
+				)
+			);
+			return (bool) $column;
+		}
+
+		private static function slots_table() {
+			global $wpdb;
+			return $wpdb->prefix . 'ep_slots';
+		}
+
+		private static function signups_table() {
+			global $wpdb;
+			return $wpdb->prefix . 'ep_signups';
+		}
+
+		private static function now_utc() {
+			return current_time( 'mysql', true );
 		}
 
 		final public static function register_routes() {
@@ -78,18 +181,21 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 		}
 
 		public static function dev_reset( WP_REST_Request $request ) {
-			// Reset slot(s)
-			self::set_slot( 12, [
-				'id'        => 12,
-				'capacity'  => 10,
-				'remaining' => 5,
-				'maxQty'    => 3,
-				'locked'    => false,
-				'cutoff'    => null,
-			]);
+			global $wpdb;
+			$wpdb->query( "DELETE FROM " . self::signups_table() );
+			$wpdb->query( "DELETE FROM " . self::slots_table() );
 
-			// Clear signups
-			self::set_signups( [] );
+			self::upsert_slot(
+				[
+					'id'        => 12,
+					'event_id'  => self::EVENT_ID,
+					'capacity'  => 10,
+					'remaining' => 5,
+					'maxQty'    => 3,
+					'locked'    => false,
+					'cutoff'    => null,
+				]
+			);
 
 			return new WP_REST_Response(
 				[ 'ok' => true ],
@@ -185,19 +291,17 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				return self::error_response( 422, 'VALIDATION_FAILED', 'slot_id is invalid', [ 'slot_id' => 'slot_id is invalid' ] );
 			}
 
-			$signups = self::get_signups();
-			foreach ( $signups as $existing ) {
-				if ( $existing['slot_id'] === $slot_id && $existing['identity_key'] === $identity ) {
-					return rest_ensure_response(
-						[
-							'data'   => [
-								'signup'       => $existing,
-								'availability' => self::availability_snapshot( $slot_id ),
-							],
-							'errors' => [],
-						]
-					);
-				}
+			$existing = self::find_confirmed_signup_by_identity( $slot_id, $identity );
+			if ( $existing ) {
+				return rest_ensure_response(
+					[
+						'data'   => [
+							'signup'       => $existing,
+							'availability' => self::availability_snapshot( $slot_id ),
+						],
+						'errors' => [],
+					]
+				);
 			}
 
 			if ( $slot['locked'] ) {
@@ -216,8 +320,11 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				return self::error_response( 422, 'VALIDATION_FAILED', 'Quantity exceeds allowed maximum.', [ 'qty' => "qty cannot exceed {$slot['maxQty']}" ] );
 			}
 
-			$slot['remaining'] -= $qty;
-			self::update_slot( $slot_id, $slot );
+			$decremented = self::decrement_slot_remaining( $slot_id, (int) $qty );
+			if ( ! $decremented ) {
+				$slot = self::get_slot( $slot_id );
+				return self::error_with_snapshot( 409, 'SLOT_FULL', 'That slot is no longer available.', $slot_id, [ 'reason' => 'slot_full', 'remaining' => $slot ? $slot['remaining'] : 0 ] );
+			}
 
 			$signup = [
 				'id'           => wp_generate_uuid4(),
@@ -231,8 +338,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				'can_claim'    => ! $is_wp,
 			];
 
-			$signups[] = $signup;
-			self::set_signups( $signups );
+			self::insert_signup( $signup );
 
 			$response = rest_ensure_response(
 				[
@@ -298,16 +404,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				return self::error_response( 422, 'VALIDATION_FAILED', 'guest.email is required for unauthenticated requests', [ 'email' => 'guest.email is required for unauthenticated requests' ] );
 			}
 
-			$signups = self::get_signups();
-			$signup  = null;
-			$index   = null;
-			foreach ( $signups as $i => $candidate ) {
-				if ( $candidate['id'] === $signup_id ) {
-					$signup = $candidate;
-					$index  = $i;
-					break;
-				}
-			}
+			$signup = self::get_signup_by_id( $signup_id );
 
 			if ( ! $signup ) {
 				return self::error_response( 404, 'SIGNUP_NOT_FOUND', 'Signup not found.', [] );
@@ -324,17 +421,14 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 			$slot_id = $signup['slot_id'];
 			$slot    = self::get_slot( $slot_id );
 			if ( $slot ) {
-				$slot['remaining'] += (int) $signup['qty'];
-				self::update_slot( $slot_id, $slot );
+				self::increment_slot_remaining( $slot_id, (int) $signup['qty'] );
 			}
 
 			$signup['status']     = 'canceled';
 			$signup['can_cancel'] = false;
 			$signup['can_edit']   = false;
 			$signup['can_claim']  = false;
-			$signups[ $index ]    = $signup;
-
-			self::set_signups( $signups );
+			self::mark_signup_canceled( $signup_id );
 
 			return rest_ensure_response(
 				[
@@ -426,54 +520,274 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 		}
 
 		private static function get_slot( $slot_id ) {
-			$slots = self::get_slots();
-			if ( isset( $slots[ $slot_id ] ) ) {
-				return $slots[ $slot_id ];
+			global $wpdb;
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " WHERE id = %d LIMIT 1",
+					$slot_id
+				),
+				ARRAY_A
+			);
+			if ( ! $row ) {
+				return null;
 			}
 
-			return null;
+			return [
+				'id'        => (int) $row['id'],
+				'event_id'  => isset( $row['event_id'] ) ? (int) $row['event_id'] : null,
+				'capacity'  => (int) $row['capacity'],
+				'remaining' => (int) $row['remaining'],
+				'maxQty'    => is_null( $row['max_qty'] ) ? null : (int) $row['max_qty'],
+				'locked'    => (bool) $row['locked'],
+				'cutoff'    => is_null( $row['cutoff_at'] ) ? null : strtotime( $row['cutoff_at'] . ' UTC' ),
+			];
+		}
+
+		private static function upsert_slot( $slot ) {
+			global $wpdb;
+			$now = self::now_utc();
+			$data = [
+				'id'        => (int) $slot['id'],
+				'event_id'  => $slot['event_id'] ?? null,
+				'capacity'  => (int) $slot['capacity'],
+				'remaining' => (int) $slot['remaining'],
+				'max_qty'   => array_key_exists( 'maxQty', $slot ) ? $slot['maxQty'] : null,
+				'locked'    => ! empty( $slot['locked'] ) ? 1 : 0,
+				'cutoff_at' => isset( $slot['cutoff'] ) && ! is_null( $slot['cutoff'] ) ? gmdate( 'Y-m-d H:i:s', (int) $slot['cutoff'] ) : null,
+				'created_at'=> $now,
+				'updated_at'=> $now,
+			];
+
+			$existing = self::get_slot( (int) $slot['id'] );
+			if ( $existing ) {
+				unset( $data['created_at'] );
+				return (bool) $wpdb->update(
+					self::slots_table(),
+					$data,
+					[ 'id' => (int) $slot['id'] ],
+					[ '%d', '%d', '%d', '%d', '%s', '%d', '%s', '%s' ],
+					[ '%d' ]
+				);
+			}
+
+			return (bool) $wpdb->insert(
+				self::slots_table(),
+				$data,
+				[ '%d', '%d', '%d', '%d', '%s', '%d', '%s', '%s', '%s' ]
+			);
 		}
 
 		private static function update_slot( $slot_id, $slot ) {
-			$slots              = self::get_slots();
-			$slots[ $slot_id ] = $slot;
-			update_option( self::SLOTS_OPTION, $slots );
-		}
+			global $wpdb;
+			$data = [];
+			$formats = [];
 
-		private static function set_slot( $slot_id, $slot ) {
-			self::update_slot( $slot_id, $slot );
+			if ( array_key_exists( 'capacity', $slot ) ) {
+				$data['capacity'] = (int) $slot['capacity'];
+				$formats[] = '%d';
+			}
+			if ( array_key_exists( 'remaining', $slot ) ) {
+				$data['remaining'] = (int) $slot['remaining'];
+				$formats[] = '%d';
+			}
+			if ( array_key_exists( 'maxQty', $slot ) ) {
+				$data['max_qty'] = $slot['maxQty'];
+				$formats[] = '%s';
+			}
+			if ( array_key_exists( 'locked', $slot ) ) {
+				$data['locked'] = ! empty( $slot['locked'] ) ? 1 : 0;
+				$formats[] = '%d';
+			}
+			if ( array_key_exists( 'cutoff', $slot ) ) {
+				$data['cutoff_at'] = is_null( $slot['cutoff'] ) ? null : gmdate( 'Y-m-d H:i:s', (int) $slot['cutoff'] );
+				$formats[] = '%s';
+			}
+			$data['updated_at'] = self::now_utc();
+			$formats[] = '%s';
+
+			return (bool) $wpdb->update(
+				self::slots_table(),
+				$data,
+				[ 'id' => (int) $slot_id ],
+				$formats,
+				[ '%d' ]
+			);
 		}
 
 		private static function get_slots() {
-			$slots = get_option( self::SLOTS_OPTION );
-			if ( ! is_array( $slots ) ) {
-				$slots = [
-					12 => [
+			global $wpdb;
+			$rows = $wpdb->get_results(
+				"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " ORDER BY id ASC",
+				ARRAY_A
+			);
+			if ( empty( $rows ) ) {
+				self::upsert_slot(
+					[
 						'id'        => 12,
+						'event_id'  => self::EVENT_ID,
 						'capacity'  => 10,
 						'remaining' => 5,
 						'maxQty'    => 3,
-						'cutoff'    => strtotime( '2026-12-31T23:59:59Z' ),
 						'locked'    => false,
-					],
+						'cutoff'    => strtotime( '2026-12-31T23:59:59Z' ),
+					]
+				);
+				$rows = $wpdb->get_results(
+					"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " ORDER BY id ASC",
+					ARRAY_A
+				);
+			}
+
+			$slots = [];
+			foreach ( $rows as $row ) {
+				$slots[] = [
+					'id'        => (int) $row['id'],
+					'event_id'  => isset( $row['event_id'] ) ? (int) $row['event_id'] : null,
+					'capacity'  => (int) $row['capacity'],
+					'remaining' => (int) $row['remaining'],
+					'maxQty'    => is_null( $row['max_qty'] ) ? null : (int) $row['max_qty'],
+					'locked'    => (bool) $row['locked'],
+					'cutoff'    => is_null( $row['cutoff_at'] ) ? null : strtotime( $row['cutoff_at'] . ' UTC' ),
 				];
-				update_option( self::SLOTS_OPTION, $slots );
 			}
 			return $slots;
 		}
 
 		private static function get_signups() {
-			$signups = get_option( self::SIGNUPS_OPTION );
-			if ( ! is_array( $signups ) ) {
-				$signups = [];
+			global $wpdb;
+			$rows = $wpdb->get_results(
+				"SELECT id, slot_id, identity_type, identity_key, qty, status FROM " . self::signups_table(),
+				ARRAY_A
+			);
+			$signups = [];
+			foreach ( $rows as $row ) {
+				$signups[] = [
+					'id'           => $row['id'],
+					'slot_id'      => (int) $row['slot_id'],
+					'identity_type'=> $row['identity_type'],
+					'identity_key' => $row['identity_key'],
+					'qty'          => (int) $row['qty'],
+					'status'       => $row['status'],
+					'can_edit'     => $row['status'] === 'confirmed',
+					'can_cancel'   => $row['status'] === 'confirmed',
+					'can_claim'    => $row['identity_type'] === 'guest' && $row['status'] === 'confirmed',
+				];
 			}
 			return $signups;
 		}
 
-		private static function set_signups( $signups ) {
-			update_option( self::SIGNUPS_OPTION, $signups );
+		private static function find_confirmed_signup_by_identity( $slot_id, $identity_key ) {
+			global $wpdb;
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, slot_id, identity_type, identity_key, qty, status FROM " . self::signups_table() . " WHERE slot_id = %d AND identity_key = %s AND status = %s LIMIT 1",
+					$slot_id,
+					$identity_key,
+					'confirmed'
+				),
+				ARRAY_A
+			);
+			if ( ! $row ) {
+				return null;
+			}
+			return [
+				'id'           => $row['id'],
+				'slot_id'      => (int) $row['slot_id'],
+				'identity_type'=> $row['identity_type'],
+				'identity_key' => $row['identity_key'],
+				'qty'          => (int) $row['qty'],
+				'status'       => $row['status'],
+				'can_edit'     => true,
+				'can_cancel'   => true,
+				'can_claim'    => $row['identity_type'] === 'guest',
+			];
+		}
+
+		private static function insert_signup( $signup ) {
+			global $wpdb;
+			$now = self::now_utc();
+			return (bool) $wpdb->insert(
+				self::signups_table(),
+				[
+					'id'           => $signup['id'],
+					'slot_id'      => (int) $signup['slot_id'],
+					'identity_type'=> $signup['identity_type'],
+					'identity_key' => $signup['identity_key'],
+					'qty'          => (int) $signup['qty'],
+					'status'       => $signup['status'],
+					'created_at'   => $now,
+					'updated_at'   => $now,
+				],
+				[ '%s', '%d', '%s', '%s', '%d', '%s', '%s', '%s' ]
+			);
+		}
+
+		private static function get_signup_by_id( $signup_id ) {
+			global $wpdb;
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, slot_id, identity_type, identity_key, qty, status FROM " . self::signups_table() . " WHERE id = %s LIMIT 1",
+					$signup_id
+				),
+				ARRAY_A
+			);
+			if ( ! $row ) {
+				return null;
+			}
+			return [
+				'id'           => $row['id'],
+				'slot_id'      => (int) $row['slot_id'],
+				'identity_type'=> $row['identity_type'],
+				'identity_key' => $row['identity_key'],
+				'qty'          => (int) $row['qty'],
+				'status'       => $row['status'],
+				'can_edit'     => $row['status'] === 'confirmed',
+				'can_cancel'   => $row['status'] === 'confirmed',
+				'can_claim'    => $row['identity_type'] === 'guest' && $row['status'] === 'confirmed',
+			];
+		}
+
+		private static function mark_signup_canceled( $signup_id ) {
+			global $wpdb;
+			return (bool) $wpdb->update(
+				self::signups_table(),
+				[
+					'status'     => 'canceled',
+					'updated_at' => self::now_utc(),
+				],
+				[ 'id' => $signup_id ],
+				[ '%s', '%s' ],
+				[ '%s' ]
+			);
+		}
+
+		private static function decrement_slot_remaining( $slot_id, $qty ) {
+			global $wpdb;
+			$updated = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE " . self::slots_table() . " SET remaining = remaining - %d, updated_at = %s WHERE id = %d AND remaining >= %d",
+					$qty,
+					self::now_utc(),
+					$slot_id,
+					$qty
+				)
+			);
+			return $updated > 0;
+		}
+
+		private static function increment_slot_remaining( $slot_id, $qty ) {
+			global $wpdb;
+			return (bool) $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE " . self::slots_table() . " SET remaining = remaining + %d, updated_at = %s WHERE id = %d",
+					$qty,
+					self::now_utc(),
+					$slot_id
+				)
+			);
 		}
 	}
 }
 
+register_activation_hook( __FILE__, [ 'Event_Planning_BFF', 'activate' ] );
 Event_Planning_BFF::init();
