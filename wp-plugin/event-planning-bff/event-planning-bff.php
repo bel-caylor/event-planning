@@ -28,7 +28,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 			self::maybe_upgrade_schema();
 		}
 
-		private static function maybe_upgrade_schema() {
+		public static function maybe_upgrade_schema() {
 			$installed = get_option( self::SCHEMA_OPTION, '0' );
 			if ( version_compare( $installed, self::SCHEMA_VERSION, '>=' ) ) {
 				return;
