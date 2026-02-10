@@ -1,0 +1,47 @@
+# Node / React
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Production builds
+dist/
+build/
+out/
+
+# Env files
+.env
+.env.*.local
+.env.local
+
+# WordPress / PHP
+wp-content/uploads/
+wp-content/plugins/*/vendor/
+wp-content/plugins/*/node_modules/
+
+# Logs
+logs/
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# OS
+Thumbs.db
+.DS_Store
+ehthumbs.db
+Icon?
+
+# Coverage / reports
+coverage/
+*.lcov
+
+# Temporary files
+*.tmp
+*.swp
