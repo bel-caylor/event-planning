@@ -26,9 +26,19 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				self::REST_NAMESPACE,
 				self::SIGNUPS_ROUTE,
 				[
-				'methods'             => 'POST',
-				'callback'            => [ __CLASS__, 'handle_signup' ],
-				'permission_callback' => [ __CLASS__, 'has_permission' ],
+					'methods'             => 'POST',
+					'callback'            => [ __CLASS__, 'handle_signup' ],
+					'permission_callback' => [ __CLASS__, 'has_permission' ],
+				]
+			);
+
+			register_rest_route(
+				self::REST_NAMESPACE,
+				self::SIGNUPS_ROUTE . '/(?P<signup_id>[\w-]+)/cancel',
+				[
+					'methods'             => 'POST',
+					'callback'            => [ __CLASS__, 'handle_cancel' ],
+					'permission_callback' => [ __CLASS__, 'has_permission' ],
 				]
 			);
 
@@ -203,6 +213,70 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 
 			$response->set_status( 200 );
 			return $response;
+		}
+
+		final public static function handle_cancel( WP_REST_Request $request ) {
+			$signup_id = $request['signup_id'];
+			$body      = $request->get_json_params();
+
+			$is_wp = get_current_user_id() > 0;
+			if ( $is_wp ) {
+				$identity_key = 'wp:' . get_current_user_id();
+			} else {
+				$guest_email = isset( $body['guest']['email'] ) ? strtolower( $body['guest']['email'] ) : '';
+				if ( ! $guest_email ) {
+					return self::error_response( 422, 'VALIDATION_FAILED', 'guest.email is required for unauthenticated requests', [ 'email' => 'guest.email is required for unauthenticated requests' ] );
+				}
+				$identity_key = 'guest:' . $guest_email;
+			}
+
+			$signups = self::get_signups();
+			$signup  = null;
+			$index   = null;
+			foreach ( $signups as $i => $candidate ) {
+				if ( $candidate['id'] === $signup_id ) {
+					$signup = $candidate;
+					$index  = $i;
+					break;
+				}
+			}
+
+			if ( ! $signup ) {
+				return self::error_response( 404, 'SIGNUP_NOT_FOUND', 'Signup not found.', [] );
+			}
+
+			if ( $signup['identity_key'] !== $identity_key ) {
+				return self::error_with_snapshot( 403, 'NOT_OWNER', 'You do not own that signup.', $signup['slot_id'] );
+			}
+
+			if ( $signup['status'] === 'canceled' ) {
+				return self::error_with_snapshot( 409, 'SIGNUP_ALREADY_CANCELED', 'This signup has already been canceled.', $signup['slot_id'] );
+			}
+
+			$slot_id = $signup['slot_id'];
+			$slot    = self::get_slot( $slot_id );
+			if ( $slot ) {
+				$slot['remaining'] += (int) $signup['qty'];
+				self::update_slot( $slot_id, $slot );
+			}
+
+			$signup['status']     = 'canceled';
+			$signup['can_cancel'] = false;
+			$signup['can_edit']   = false;
+			$signup['can_claim']  = false;
+			$signups[ $index ]    = $signup;
+
+			self::set_signups( $signups );
+
+			return rest_ensure_response(
+				[
+					'data'   => [
+						'signup'       => $signup,
+						'availability' => self::availability_snapshot( $slot_id ),
+					],
+					'errors' => [],
+				]
+			);
 		}
 
 		private static function validate_request( $slot_id, $qty, $guest, $is_wp ) {

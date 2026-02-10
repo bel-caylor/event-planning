@@ -80,6 +80,8 @@ All non-2xx responses should use this envelope:
 | SIGNUP_NOT_FOUND | Signup does not exist | Show 404 or “already removed” state |
 | RESOURCE_GONE | Resource removed (soft delete) | Show “no longer available” state |
 
+`SIGNUP_NOT_FOUND` is also returned by `POST /signups/{id}/cancel` when the ID is invalid.
+
 ### Conflicts & Concurrency (409)
 > **409 responses should include a `snapshot`** containing updated availability/capabilities to re-render UI.
 
@@ -91,6 +93,8 @@ All non-2xx responses should use this envelope:
 | DUPLICATE_SIGNUP | Same identity already signed up for this slot | Optional | Show existing signup, navigate to edit |
 | VERSION_CONFLICT | Resource version/etag mismatch | Yes | Refetch/replace state and retry if appropriate |
 | SIGNUP_ALREADY_CANCELED | Cancel attempted but already canceled | Optional | Treat as success-ish; refresh UI |
+
+`SIGNUP_ALREADY_CANCELED` is emitted by cancellation endpoints so the UI can stop retrying an action that already completed.
 | SIGNUP_LOCKED | Signup is locked due to policy/admin | Yes | Disable edit/cancel, render reason |
 
 ### Validation (422)

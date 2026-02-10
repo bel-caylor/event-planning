@@ -82,6 +82,20 @@ const validationError = (fieldErrors) => {
   };
 };
 
+const getIdentityKey = (req) => {
+  const isWpUser = Boolean(req.headers['x-wp-user-id']);
+  if (isWpUser) {
+    return `wp:${req.headers['x-wp-user-id']}`;
+  }
+
+  const guestEmail = req.body?.guest?.email;
+  if (!guestEmail) {
+    return null;
+  }
+
+  return `guest:${guestEmail.toLowerCase()}`;
+};
+
 const createApp = () => {
   const app = express();
   app.use(express.json());
@@ -216,6 +230,88 @@ const createApp = () => {
       data: {
         signup,
         availability: availabilitySnapshot(slot.id)
+      },
+      errors: []
+    });
+  });
+
+  app.post('/signups/:signupId/cancel', (req, res) => {
+    const { signupId } = req.params;
+    const identityKey = getIdentityKey(req);
+
+    if (!identityKey) {
+      return res.status(422).json(validationError({
+        email: 'guest.email is required for unauthenticated requests'
+      }));
+    }
+
+    const signup = state.signups.find((item) => item.id === signupId);
+    if (!signup) {
+      return res.status(404).json({
+        errors: [
+          {
+            code: 'SIGNUP_NOT_FOUND',
+            message: 'Signup not found.',
+            details: {},
+            retryable: false
+          }
+        ]
+      });
+    }
+
+    if (signup.identity_key !== identityKey) {
+      return res.status(403).json({
+        errors: [
+          {
+            code: 'NOT_OWNER',
+            message: 'You do not own that signup.',
+            details: {},
+            retryable: false
+          }
+        ],
+        snapshot: {
+          availability: availabilitySnapshot(signup.slot_id)
+        }
+      });
+    }
+
+    if (signup.status === 'canceled') {
+      return res.status(409).json({
+        errors: [
+          {
+            code: 'SIGNUP_ALREADY_CANCELED',
+            message: 'This signup has already been canceled.',
+            details: {},
+            retryable: false
+          }
+        ],
+        snapshot: {
+          availability: availabilitySnapshot(signup.slot_id)
+        }
+      });
+    }
+
+    const slot = state.slots.get(signup.slot_id);
+    if (slot) {
+      slot.remaining += signup.qty;
+    }
+
+    const updatedSignup = {
+      ...signup,
+      status: 'canceled',
+      can_cancel: false,
+      can_edit: false,
+      can_claim: false
+    };
+
+    state.signups = state.signups.map((item) =>
+      item.id === signupId ? updatedSignup : item
+    );
+
+    return res.status(200).json({
+      data: {
+        signup: updatedSignup,
+        availability: availabilitySnapshot(signup.slot_id)
       },
       errors: []
     });

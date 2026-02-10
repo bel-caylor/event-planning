@@ -223,6 +223,66 @@ Breaking changes require:
 
 ---
 
+## Endpoint: Cancel Signup
+
+### `POST /signups/{id}/cancel`
+
+Canceling a signup restores availability and tears down the signup’s permissions. Guests must provide the email they used to create the signup; authenticated WordPress users rely on their session.
+
+### Request
+
+#### Headers
+- `Content-Type: application/json`
+- `x-wp-user-id` (when canceling as an authenticated WordPress user)
+
+#### Body
+
+```json
+{
+  "guest": {
+    "email": "user@example.com"
+  }
+}
+```
+
+- `guest.email` is required whenever the request is not authenticated through WordPress.
+
+### Success Response
+
+#### `200 OK`
+
+```json
+{
+  "data": {
+    "signup": {
+      "id": 77,
+      "slot_id": 12,
+      "qty": 1,
+      "identity_type": "guest",
+      "status": "canceled",
+      "can_edit": false,
+      "can_cancel": false,
+      "can_claim": false
+    },
+    "availability": {
+      "slot_id": 12,
+      "remaining": 5,
+      "can_signup": true,
+      "reason": null
+    }
+  },
+  "errors": []
+}
+```
+
+React must swallow the returned snapshot as canonical and refresh availability or hide cancel controls.
+
+### Error Responses
+
+- **`404 SIGNUP_NOT_FOUND`** — The requested signup either never existed or was already deleted. Treat as a stale resource and avoid retrying.
+- **`403 NOT_OWNER`** — The current identity does not own the signup. Disable cancel controls and show an ownership message.
+- **`409 SIGNUP_ALREADY_CANCELED`** — The signup was already canceled. Return the snapshot so the UI can refresh and stop retrying.
+
 ## Summary
 
 > **React requests actions. WordPress decides outcomes.  

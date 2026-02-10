@@ -117,4 +117,69 @@ describe('POST /signups', () => {
     });
   });
 
+  it('cancels signup and restores availability', async () => {
+    const create = await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: 'cancel@example.com', name: 'Cancel' }
+    });
+
+    const response = await request(app)
+      .post(`/signups/${create.body.data.signup.id}/cancel`)
+      .send({
+        guest: { email: 'cancel@example.com' }
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.signup.status).toBe('canceled');
+    expect(response.body.data.signup.can_cancel).toBe(false);
+    expect(response.body.data.availability.remaining).toBe(5);
+    expect(state.slots.get(12).remaining).toBe(5);
+  });
+
+  it('rejects cancellation from non-owner', async () => {
+    const create = await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: 'other@example.com', name: 'Other' }
+    });
+
+    const response = await request(app)
+      .post(`/signups/${create.body.data.signup.id}/cancel`)
+      .set('x-wp-user-id', '999')
+      .send({});
+
+    expect(response.status).toBe(403);
+    expect(response.body.errors[0].code).toBe('NOT_OWNER');
+    expect(response.body.snapshot).toBeDefined();
+  });
+
+  it('returns 409 when signup already canceled', async () => {
+    const create = await request(app).post('/signups').send({
+      slot_id: 12,
+      qty: 1,
+      guest: { email: 'repeat@example.com', name: 'Repeat' }
+    });
+
+    await request(app)
+      .post(`/signups/${create.body.data.signup.id}/cancel`)
+      .send({ guest: { email: 'repeat@example.com' } });
+
+    const response = await request(app)
+      .post(`/signups/${create.body.data.signup.id}/cancel`)
+      .send({ guest: { email: 'repeat@example.com' } });
+
+    expect(response.status).toBe(409);
+    expect(response.body.errors[0].code).toBe('SIGNUP_ALREADY_CANCELED');
+  });
+
+  it('returns 404 when signup is missing', async () => {
+    const response = await request(app)
+      .post('/signups/does-not-exist/cancel')
+      .send({ guest: { email: 'missing@example.com' } });
+
+    expect(response.status).toBe(404);
+    expect(response.body.errors[0].code).toBe('SIGNUP_NOT_FOUND');
+  });
+
 });
