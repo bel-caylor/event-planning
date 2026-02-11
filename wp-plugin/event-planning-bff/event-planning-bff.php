@@ -16,7 +16,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 		const BFF_USER_HEADER       = 'x-wp-user-id';
 		const EVENT_ID             = 1;
 		const EVENT_NAME           = 'Event Planning Demo';
-		const SCHEMA_VERSION        = '1.2.0';
+		const SCHEMA_VERSION        = '1.3.0';
 		const SCHEMA_OPTION         = 'event_planning_schema_version';
 
 		final public static function init() {
@@ -51,6 +51,11 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				self::ensure_default_event();
 			}
 
+			if ( version_compare( $installed, '1.3.0', '<' ) ) {
+				self::upgrade_to_1_3_0( $charset_collate );
+				self::ensure_default_event();
+			}
+
 			update_option( self::SCHEMA_OPTION, self::SCHEMA_VERSION );
 		}
 
@@ -65,15 +70,22 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 CREATE TABLE {$slots_table} (
 	id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
 	event_id BIGINT(20) UNSIGNED NULL,
+	title VARCHAR(255) NOT NULL DEFAULT '',
+	description LONGTEXT NULL,
+	sort_order INT UNSIGNED NOT NULL DEFAULT 0,
+	status VARCHAR(20) NOT NULL DEFAULT 'open',
 	capacity INT UNSIGNED NOT NULL,
 	remaining INT UNSIGNED NOT NULL,
 	max_qty INT UNSIGNED NULL,
 	locked TINYINT(1) NOT NULL DEFAULT 0,
 	cutoff_at DATETIME NULL,
+	timezone VARCHAR(64) NULL,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
 PRIMARY KEY  (id),
-	KEY event_id (event_id)
+	KEY event_id (event_id),
+	KEY event_sort (event_id, sort_order),
+	KEY event_status (event_id, status)
 ) {$charset_collate};
 
 CREATE TABLE {$signups_table} (
@@ -81,6 +93,12 @@ CREATE TABLE {$signups_table} (
 	slot_id BIGINT(20) UNSIGNED NOT NULL,
 	identity_type VARCHAR(20) NOT NULL,
 	identity_key VARCHAR(190) NOT NULL,
+	event_id BIGINT(20) UNSIGNED NULL,
+	name VARCHAR(190) NULL,
+	email VARCHAR(190) NULL,
+	wp_user_id BIGINT(20) UNSIGNED NULL,
+	token_hash CHAR(64) NULL,
+	token_expires_at DATETIME NULL,
 	qty INT UNSIGNED NOT NULL,
 	status VARCHAR(20) NOT NULL,
 	created_at DATETIME NOT NULL,
@@ -88,7 +106,11 @@ CREATE TABLE {$signups_table} (
 PRIMARY KEY  (id),
 	UNIQUE KEY slot_identity_status (slot_id, identity_key, status),
 	KEY slot_id (slot_id),
-	KEY identity_key (identity_key)
+	KEY identity_key (identity_key),
+	KEY event_id (event_id),
+	KEY wp_user_id (wp_user_id),
+	KEY email (email),
+	KEY status_created (status, created_at)
 ) {$charset_collate};
 
 CREATE TABLE {$events_table} (
@@ -98,6 +120,8 @@ CREATE TABLE {$events_table} (
 	starts_at DATETIME NOT NULL,
 	ends_at DATETIME NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'draft',
+	visibility VARCHAR(20) NOT NULL DEFAULT 'logged_in',
+	timezone VARCHAR(64) NULL,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
 	PRIMARY KEY (id)
@@ -120,6 +144,8 @@ CREATE TABLE {$events_table} (
 	starts_at DATETIME NOT NULL,
 	ends_at DATETIME NULL,
 	status VARCHAR(20) NOT NULL DEFAULT 'draft',
+	visibility VARCHAR(20) NOT NULL DEFAULT 'logged_in',
+	timezone VARCHAR(64) NULL,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
 	PRIMARY KEY (id)
@@ -141,6 +167,109 @@ CREATE TABLE {$events_table} (
 			);
 		}
 
+		private static function upgrade_to_1_3_0( $charset_collate ) {
+			global $wpdb;
+
+			$slots_table   = self::slots_table();
+			$signups_table = self::signups_table();
+			$events_table  = self::events_table();
+
+			if ( ! self::column_exists( $slots_table, 'title' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD COLUMN title VARCHAR(255) NOT NULL DEFAULT '' AFTER event_id;"
+				);
+			}
+			if ( ! self::column_exists( $slots_table, 'description' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD COLUMN description LONGTEXT NULL AFTER title;"
+				);
+			}
+			if ( ! self::column_exists( $slots_table, 'sort_order' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD COLUMN sort_order INT UNSIGNED NOT NULL DEFAULT 0 AFTER description;"
+				);
+			}
+			if ( ! self::column_exists( $slots_table, 'status' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'open' AFTER sort_order;"
+				);
+			}
+			if ( ! self::index_exists( $slots_table, 'event_sort' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD KEY event_sort (event_id, sort_order);"
+				);
+			}
+			if ( ! self::index_exists( $slots_table, 'event_status' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$slots_table} ADD KEY event_status (event_id, status);"
+				);
+			}
+
+			if ( ! self::column_exists( $signups_table, 'event_id' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN event_id BIGINT(20) UNSIGNED NULL AFTER slot_id;"
+				);
+			}
+			if ( ! self::column_exists( $signups_table, 'name' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN name VARCHAR(190) NULL AFTER identity_key;"
+				);
+			}
+			if ( ! self::column_exists( $signups_table, 'email' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN email VARCHAR(190) NULL AFTER name;"
+				);
+			}
+			if ( ! self::column_exists( $signups_table, 'wp_user_id' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN wp_user_id BIGINT(20) UNSIGNED NULL AFTER email;"
+				);
+			}
+			if ( ! self::column_exists( $signups_table, 'token_hash' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN token_hash CHAR(64) NULL AFTER wp_user_id;"
+				);
+			}
+			if ( ! self::column_exists( $signups_table, 'token_expires_at' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD COLUMN token_expires_at DATETIME NULL AFTER token_hash;"
+				);
+			}
+			if ( ! self::index_exists( $signups_table, 'event_id' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD KEY event_id (event_id);"
+				);
+			}
+			if ( ! self::index_exists( $signups_table, 'wp_user_id' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD KEY wp_user_id (wp_user_id);"
+				);
+			}
+			if ( ! self::index_exists( $signups_table, 'email' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD KEY email (email);"
+				);
+			}
+			if ( ! self::index_exists( $signups_table, 'status_created' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$signups_table} ADD KEY status_created (status, created_at);"
+				);
+			}
+
+			if ( ! self::column_exists( $events_table, 'visibility' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$events_table} ADD COLUMN visibility VARCHAR(20) NOT NULL DEFAULT 'logged_in' AFTER status;"
+				);
+			}
+			if ( ! self::column_exists( $events_table, 'timezone' ) ) {
+				$wpdb->query(
+					"ALTER TABLE {$events_table} ADD COLUMN timezone VARCHAR(64) NULL AFTER visibility;"
+				);
+			}
+
+			self::create_base_schema( $charset_collate );
+		}
+
 		private static function column_exists( $table, $column ) {
 			global $wpdb;
 			$column = $wpdb->get_row(
@@ -150,6 +279,17 @@ CREATE TABLE {$events_table} (
 				)
 			);
 			return (bool) $column;
+		}
+
+		private static function index_exists( $table, $index ) {
+			global $wpdb;
+			$index = $wpdb->get_var(
+				$wpdb->prepare(
+					"SHOW INDEX FROM {$table} WHERE Key_name = %s",
+					$index
+				)
+			);
+			return ! is_null( $index );
 		}
 
 		private static function slots_table() {
@@ -177,6 +317,8 @@ CREATE TABLE {$events_table} (
 					'starts_at'   => $now,
 					'ends_at'     => null,
 					'status'      => 'draft',
+					'visibility'  => 'logged_in',
+					'timezone'    => null,
 					'created_at'  => $now,
 					'updated_at'  => $now,
 				]
@@ -192,6 +334,8 @@ CREATE TABLE {$events_table} (
 				'starts_at'   => self::now_utc(),
 				'ends_at'     => null,
 				'status'      => 'draft',
+				'visibility'  => 'logged_in',
+				'timezone'    => null,
 				'created_at'  => self::now_utc(),
 				'updated_at'  => self::now_utc(),
 			];
@@ -207,10 +351,12 @@ CREATE TABLE {$events_table} (
 					'starts_at'   => $data['starts_at'],
 					'ends_at'     => $data['ends_at'],
 					'status'      => $data['status'],
+					'visibility'  => $data['visibility'],
+					'timezone'    => $data['timezone'],
 					'created_at'  => $data['created_at'],
 					'updated_at'  => $data['updated_at'],
 				],
-				[ '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
+				[ '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
 			);
 		}
 
@@ -218,7 +364,7 @@ CREATE TABLE {$events_table} (
 			global $wpdb;
 			$row = $wpdb->get_row(
 				$wpdb->prepare(
-					"SELECT id, title, description, starts_at, ends_at, status, created_at, updated_at FROM " . self::events_table() . " WHERE id = %d LIMIT 1",
+					"SELECT id, title, description, starts_at, ends_at, status, visibility, timezone, created_at, updated_at FROM " . self::events_table() . " WHERE id = %d LIMIT 1",
 					$event_id
 				),
 				ARRAY_A
@@ -235,6 +381,8 @@ CREATE TABLE {$events_table} (
 				'starts_at'   => $row['starts_at'],
 				'ends_at'     => $row['ends_at'],
 				'status'      => $row['status'],
+				'visibility'  => $row['visibility'],
+				'timezone'    => $row['timezone'],
 				'created_at'  => $row['created_at'],
 				'updated_at'  => $row['updated_at'],
 			];
@@ -257,6 +405,19 @@ CREATE TABLE {$events_table} (
 			$slots_table   = self::slots_table();
 			$signups_table = self::signups_table();
 
+			$slot_title_select       = self::column_exists( $slots_table, 'title' ) ? 's.title AS slot_title,' : "'' AS slot_title,";
+			$slot_description_select = self::column_exists( $slots_table, 'description' ) ? 's.description AS slot_description,' : 'NULL AS slot_description,';
+			$slot_sort_select        = self::column_exists( $slots_table, 'sort_order' ) ? 's.sort_order AS slot_sort_order,' : '0 AS slot_sort_order,';
+			$slot_status_select      = self::column_exists( $slots_table, 'status' ) ? 's.status AS slot_status,' : "'open' AS slot_status,";
+			$slot_timezone_select    = self::column_exists( $slots_table, 'timezone' ) ? 's.timezone AS slot_timezone,' : 'NULL AS slot_timezone,';
+
+			$event_visibility_select = self::column_exists( $events_table, 'visibility' ) ? 'e.visibility AS event_visibility,' : "'logged_in' AS event_visibility,";
+			$event_timezone_select   = self::column_exists( $events_table, 'timezone' ) ? 'e.timezone AS event_timezone,' : 'NULL AS event_timezone,';
+
+			$signup_name_select      = self::column_exists( $signups_table, 'name' ) ? 'su.name AS signup_name,' : 'NULL AS signup_name,';
+			$signup_email_select     = self::column_exists( $signups_table, 'email' ) ? 'su.email AS signup_email,' : 'NULL AS signup_email,';
+			$signup_wp_user_select   = self::column_exists( $signups_table, 'wp_user_id' ) ? 'su.wp_user_id AS signup_wp_user_id,' : 'NULL AS signup_wp_user_id,';
+
 			if ( $identity_key ) {
 				$identity_condition = $wpdb->prepare( 'AND su.identity_key = %s', $identity_key );
 			} else {
@@ -271,18 +432,28 @@ SELECT
 	e.starts_at,
 	e.ends_at,
 	e.status AS event_status,
+	{$event_visibility_select}
+	{$event_timezone_select}
 	e.created_at AS event_created_at,
 	e.updated_at AS event_updated_at,
 	s.id AS slot_id,
+	{$slot_title_select}
+	{$slot_description_select}
+	{$slot_sort_select}
+	{$slot_status_select}
 	s.capacity,
 	s.remaining,
 	s.max_qty,
 	s.cutoff_at,
 	s.locked,
+	{$slot_timezone_select}
 	s.event_id,
 	su.id AS signup_id,
 	su.identity_type,
 	su.identity_key,
+	{$signup_name_select}
+	{$signup_email_select}
+	{$signup_wp_user_select}
 	su.qty,
 	su.status AS signup_status,
 	su.created_at AS signup_created,
@@ -291,7 +462,7 @@ FROM {$events_table} e
 LEFT JOIN {$slots_table} s ON s.event_id = e.id
 LEFT JOIN {$signups_table} su ON su.slot_id = s.id {$identity_condition}
 WHERE e.id = %d
-ORDER BY s.id ASC
+ORDER BY s.sort_order ASC, s.id ASC
 ";
 
 			$rows = $wpdb->get_results( $wpdb->prepare( $sql, $event_id ), ARRAY_A );
@@ -313,26 +484,38 @@ ORDER BY s.id ASC
 						'starts_at'   => $row['starts_at'],
 						'ends_at'     => $row['ends_at'],
 						'status'      => $row['event_status'],
+						'visibility'  => $row['event_visibility'],
+						'timezone'    => $row['event_timezone'],
 						'created_at'  => $row['event_created_at'],
 						'updated_at'  => $row['event_updated_at'],
 					];
 				}
 
 				if ( $row['slot_id'] ) {
-					$availability = self::availability_snapshot( $row['slot_id'] );
+					$availability = self::availability_snapshot_from_row( $row );
 
 					$has_signup = ! empty( $row['signup_id'] );
 					$can_edit   = $has_signup && 'confirmed' === $row['signup_status'];
 					$can_cancel = $can_edit;
 					$can_claim  = $has_signup && 'guest' === $row['identity_type'] && 'confirmed' === $row['signup_status'];
+					$title      = isset( $row['slot_title'] ) ? trim( (string) $row['slot_title'] ) : '';
+					if ( '' === $title ) {
+						$title = 'Slot #' . $row['slot_id'];
+					}
 
 					$slots[] = [
 						'slot_id'      => (int) $row['slot_id'],
+						'title'        => $title,
+						'description'  => $row['slot_description'],
+						'sort_order'   => isset( $row['slot_sort_order'] ) ? (int) $row['slot_sort_order'] : 0,
+						'status'       => $row['slot_status'] ?? 'open',
 						'capacity'     => (int) $row['capacity'],
 						'remaining'    => (int) $row['remaining'],
 						'max_qty'      => isset( $row['max_qty'] ) ? (int) $row['max_qty'] : null,
 						'cutoff_at'    => $row['cutoff_at'],
 						'locked'       => (bool) $row['locked'],
+						'timezone'     => $row['slot_timezone'] ?? null,
+						'is_full'      => (int) $row['remaining'] <= 0,
 						'availability' => $availability,
 						'can_signup'   => $availability['can_signup'],
 						'can_edit'     => $can_edit,
@@ -348,6 +531,9 @@ ORDER BY s.id ASC
 						'slot_id'      => (int) $row['slot_id'],
 						'identity_type'=> $row['identity_type'],
 						'identity_key' => $row['identity_key'],
+						'name'         => $row['signup_name'],
+						'email'        => $row['signup_email'],
+						'wp_user_id'   => isset( $row['signup_wp_user_id'] ) ? (int) $row['signup_wp_user_id'] : null,
 						'qty'          => (int) $row['qty'],
 						'status'       => $row['signup_status'],
 						'can_edit'     => $can_edit,
@@ -706,12 +892,68 @@ ORDER BY s.id ASC
 				);
 			}
 
+			$status = $slot['status'] ?? 'open';
+			$locked = ! empty( $slot['locked'] );
+			$cutoff = $slot['cutoff'] ?? null;
+			$remaining = $slot['remaining'];
+			$reason = null;
+			$can_signup = $remaining > 0;
+
+			if ( $locked ) {
+				$can_signup = false;
+				$reason = 'slot_locked';
+			} elseif ( 'open' !== $status ) {
+				$can_signup = false;
+				$reason = 'slot_closed';
+			} elseif ( ! is_null( $cutoff ) && current_time( 'timestamp' ) > $cutoff ) {
+				$can_signup = false;
+				$reason = 'cutoff_passed';
+			} elseif ( $remaining <= 0 ) {
+				$can_signup = false;
+				$reason = 'slot_full';
+			}
+
 			return array_merge(
 				[
 					'slot_id'    => $slot['id'],
 					'remaining'  => max( 0, $slot['remaining'] ),
-					'can_signup' => $slot['remaining'] > 0,
-					'reason'     => null,
+					'can_signup' => $can_signup,
+					'reason'     => $reason,
+				],
+				$overrides
+			);
+		}
+
+		private static function availability_snapshot_from_row( array $row, array $overrides = [] ) {
+			$remaining = isset( $row['remaining'] ) ? (int) $row['remaining'] : 0;
+			$locked = ! empty( $row['locked'] );
+			$status = $row['slot_status'] ?? 'open';
+			$cutoff_at = $row['cutoff_at'] ?? null;
+			$cutoff_ts = is_null( $cutoff_at ) ? null : strtotime( $cutoff_at . ' UTC' );
+
+			$can_signup = $remaining > 0;
+			$reason = null;
+
+			if ( $locked ) {
+				$can_signup = false;
+				$reason = 'slot_locked';
+			} elseif ( 'open' !== $status ) {
+				$can_signup = false;
+				$reason = 'slot_closed';
+			} elseif ( ! is_null( $cutoff_ts ) && current_time( 'timestamp' ) > $cutoff_ts ) {
+				$can_signup = false;
+				$reason = 'cutoff_passed';
+			} elseif ( $remaining <= 0 ) {
+				$can_signup = false;
+				$reason = 'slot_full';
+			}
+
+			return array_merge(
+				[
+					'slot_id'    => isset( $row['slot_id'] ) ? (int) $row['slot_id'] : 0,
+					'remaining'  => max( 0, $remaining ),
+					'can_signup' => $can_signup,
+					'reason'     => $reason,
 				],
 				$overrides
 			);
@@ -749,7 +991,7 @@ ORDER BY s.id ASC
 			global $wpdb;
 			$row = $wpdb->get_row(
 				$wpdb->prepare(
-					"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " WHERE id = %d LIMIT 1",
+					"SELECT id, event_id, title, description, sort_order, status, capacity, remaining, max_qty, locked, cutoff_at, timezone FROM " . self::slots_table() . " WHERE id = %d LIMIT 1",
 					$slot_id
 				),
 				ARRAY_A
@@ -758,28 +1000,47 @@ ORDER BY s.id ASC
 				return null;
 			}
 
+			$title = isset( $row['title'] ) ? trim( (string) $row['title'] ) : '';
+			if ( '' === $title ) {
+				$title = 'Slot #' . $row['id'];
+			}
+
 			return [
 				'id'        => (int) $row['id'],
 				'event_id'  => isset( $row['event_id'] ) ? (int) $row['event_id'] : null,
+				'title'     => $title,
+				'description' => $row['description'],
+				'sort_order'  => isset( $row['sort_order'] ) ? (int) $row['sort_order'] : 0,
+				'status'    => $row['status'] ?? 'open',
 				'capacity'  => (int) $row['capacity'],
 				'remaining' => (int) $row['remaining'],
 				'maxQty'    => is_null( $row['max_qty'] ) ? null : (int) $row['max_qty'],
 				'locked'    => (bool) $row['locked'],
 				'cutoff'    => is_null( $row['cutoff_at'] ) ? null : strtotime( $row['cutoff_at'] . ' UTC' ),
+				'timezone'  => $row['timezone'] ?? null,
 			];
 		}
 
 		private static function upsert_slot( $slot ) {
 			global $wpdb;
 			$now = self::now_utc();
+			$title = isset( $slot['title'] ) ? trim( (string) $slot['title'] ) : '';
+			if ( '' === $title ) {
+				$title = 'Slot #' . (int) $slot['id'];
+			}
 			$data = [
 				'id'        => (int) $slot['id'],
 				'event_id'  => $slot['event_id'] ?? null,
+				'title'     => $title,
+				'description' => $slot['description'] ?? null,
+				'sort_order' => isset( $slot['sort_order'] ) ? (int) $slot['sort_order'] : 0,
+				'status'    => $slot['status'] ?? 'open',
 				'capacity'  => (int) $slot['capacity'],
 				'remaining' => (int) $slot['remaining'],
 				'max_qty'   => array_key_exists( 'maxQty', $slot ) ? $slot['maxQty'] : null,
 				'locked'    => ! empty( $slot['locked'] ) ? 1 : 0,
 				'cutoff_at' => isset( $slot['cutoff'] ) && ! is_null( $slot['cutoff'] ) ? gmdate( 'Y-m-d H:i:s', (int) $slot['cutoff'] ) : null,
+				'timezone'  => $slot['timezone'] ?? null,
 				'created_at'=> $now,
 				'updated_at'=> $now,
 			];
@@ -791,7 +1052,7 @@ ORDER BY s.id ASC
 					self::slots_table(),
 					$data,
 					[ 'id' => (int) $slot['id'] ],
-					[ '%d', '%d', '%d', '%d', '%s', '%d', '%s', '%s' ],
+					[ '%d', '%s', '%s', '%d', '%s', '%d', '%d', '%s', '%d', '%s', '%s', '%s' ],
 					[ '%d' ]
 				);
 			}
@@ -799,7 +1060,7 @@ ORDER BY s.id ASC
 			return (bool) $wpdb->insert(
 				self::slots_table(),
 				$data,
-				[ '%d', '%d', '%d', '%d', '%s', '%d', '%s', '%s', '%s' ]
+				[ '%d', '%d', '%s', '%s', '%d', '%s', '%d', '%d', '%s', '%d', '%s', '%s', '%s', '%s' ]
 			);
 		}
 
@@ -811,6 +1072,22 @@ ORDER BY s.id ASC
 			if ( array_key_exists( 'capacity', $slot ) ) {
 				$data['capacity'] = (int) $slot['capacity'];
 				$formats[] = '%d';
+			}
+			if ( array_key_exists( 'title', $slot ) ) {
+				$data['title'] = (string) $slot['title'];
+				$formats[] = '%s';
+			}
+			if ( array_key_exists( 'description', $slot ) ) {
+				$data['description'] = $slot['description'];
+				$formats[] = '%s';
+			}
+			if ( array_key_exists( 'sort_order', $slot ) ) {
+				$data['sort_order'] = (int) $slot['sort_order'];
+				$formats[] = '%d';
+			}
+			if ( array_key_exists( 'status', $slot ) ) {
+				$data['status'] = (string) $slot['status'];
+				$formats[] = '%s';
 			}
 			if ( array_key_exists( 'remaining', $slot ) ) {
 				$data['remaining'] = (int) $slot['remaining'];
@@ -828,6 +1105,10 @@ ORDER BY s.id ASC
 				$data['cutoff_at'] = is_null( $slot['cutoff'] ) ? null : gmdate( 'Y-m-d H:i:s', (int) $slot['cutoff'] );
 				$formats[] = '%s';
 			}
+			if ( array_key_exists( 'timezone', $slot ) ) {
+				$data['timezone'] = $slot['timezone'];
+				$formats[] = '%s';
+			}
 			$data['updated_at'] = self::now_utc();
 			$formats[] = '%s';
 
@@ -843,7 +1124,7 @@ ORDER BY s.id ASC
 		private static function get_slots() {
 			global $wpdb;
 			$rows = $wpdb->get_results(
-				"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " ORDER BY id ASC",
+				"SELECT id, event_id, title, description, sort_order, status, capacity, remaining, max_qty, locked, cutoff_at, timezone FROM " . self::slots_table() . " ORDER BY id ASC",
 				ARRAY_A
 			);
 			if ( empty( $rows ) ) {
@@ -859,21 +1140,30 @@ ORDER BY s.id ASC
 					]
 				);
 				$rows = $wpdb->get_results(
-					"SELECT id, event_id, capacity, remaining, max_qty, locked, cutoff_at FROM " . self::slots_table() . " ORDER BY id ASC",
+					"SELECT id, event_id, title, description, sort_order, status, capacity, remaining, max_qty, locked, cutoff_at, timezone FROM " . self::slots_table() . " ORDER BY id ASC",
 					ARRAY_A
 				);
 			}
 
 			$slots = [];
 			foreach ( $rows as $row ) {
+				$title = isset( $row['title'] ) ? trim( (string) $row['title'] ) : '';
+				if ( '' === $title ) {
+					$title = 'Slot #' . $row['id'];
+				}
 				$slots[] = [
 					'id'        => (int) $row['id'],
 					'event_id'  => isset( $row['event_id'] ) ? (int) $row['event_id'] : null,
+					'title'     => $title,
+					'description' => $row['description'],
+					'sort_order'  => isset( $row['sort_order'] ) ? (int) $row['sort_order'] : 0,
+					'status'    => $row['status'] ?? 'open',
 					'capacity'  => (int) $row['capacity'],
 					'remaining' => (int) $row['remaining'],
 					'maxQty'    => is_null( $row['max_qty'] ) ? null : (int) $row['max_qty'],
 					'locked'    => (bool) $row['locked'],
 					'cutoff'    => is_null( $row['cutoff_at'] ) ? null : strtotime( $row['cutoff_at'] . ' UTC' ),
+					'timezone'  => $row['timezone'] ?? null,
 				];
 			}
 			return $slots;
@@ -989,6 +1279,7 @@ ORDER BY s.id ASC
 
 		private static function decrement_slot_remaining( $slot_id, $qty ) {
 			global $wpdb;
+			// Invariant: remaining is source of truth. Validate max_qty in request, then atomically decrement here.
 			$updated = $wpdb->query(
 				$wpdb->prepare(
 					"UPDATE " . self::slots_table() . " SET remaining = remaining - %d, updated_at = %s WHERE id = %d AND remaining >= %d",
