@@ -16,7 +16,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 		const BFF_USER_HEADER       = 'x-wp-user-id';
 		const EVENT_ID             = 1;
 		const EVENT_NAME           = 'Event Planning Demo';
-		const SCHEMA_VERSION        = '1.1.0';
+		const SCHEMA_VERSION        = '1.2.0';
 		const SCHEMA_OPTION         = 'event_planning_schema_version';
 
 		final public static function init() {
@@ -46,6 +46,11 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 				self::add_slot_timezone_column();
 			}
 
+			if ( version_compare( $installed, '1.2.0', '<' ) ) {
+				self::create_event_table( $charset_collate );
+				self::ensure_default_event();
+			}
+
 			update_option( self::SCHEMA_OPTION, self::SCHEMA_VERSION );
 		}
 
@@ -54,6 +59,7 @@ if ( ! class_exists( 'Event_Planning_BFF' ) ) {
 
 			$slots_table   = self::slots_table();
 			$signups_table = self::signups_table();
+			$events_table  = self::events_table();
 
 			$sql = "
 CREATE TABLE {$slots_table} (
@@ -66,7 +72,7 @@ CREATE TABLE {$slots_table} (
 	cutoff_at DATETIME NULL,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
-	PRIMARY KEY  (id),
+PRIMARY KEY  (id),
 	KEY event_id (event_id)
 ) {$charset_collate};
 
@@ -79,10 +85,44 @@ CREATE TABLE {$signups_table} (
 	status VARCHAR(20) NOT NULL,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL,
-	PRIMARY KEY  (id),
+PRIMARY KEY  (id),
 	UNIQUE KEY slot_identity_status (slot_id, identity_key, status),
 	KEY slot_id (slot_id),
 	KEY identity_key (identity_key)
+) {$charset_collate};
+
+CREATE TABLE {$events_table} (
+	id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+	title VARCHAR(255) NOT NULL,
+	description LONGTEXT NULL,
+	starts_at DATETIME NOT NULL,
+	ends_at DATETIME NULL,
+	status VARCHAR(20) NOT NULL DEFAULT 'draft',
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	PRIMARY KEY (id)
+) {$charset_collate};
+";
+
+			dbDelta( $sql );
+			self::ensure_default_event();
+		}
+
+		private static function create_event_table( $charset_collate ) {
+			global $wpdb;
+			$events_table = self::events_table();
+
+			$sql = "
+CREATE TABLE {$events_table} (
+	id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+	title VARCHAR(255) NOT NULL,
+	description LONGTEXT NULL,
+	starts_at DATETIME NOT NULL,
+	ends_at DATETIME NULL,
+	status VARCHAR(20) NOT NULL DEFAULT 'draft',
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL,
+	PRIMARY KEY (id)
 ) {$charset_collate};
 ";
 
@@ -120,6 +160,214 @@ CREATE TABLE {$signups_table} (
 		private static function signups_table() {
 			global $wpdb;
 			return $wpdb->prefix . 'ep_signups';
+		}
+
+		private static function events_table() {
+			global $wpdb;
+			return $wpdb->prefix . 'ep_events';
+		}
+
+		private static function ensure_default_event() {
+			$now = self::now_utc();
+			self::upsert_event(
+				[
+					'id'          => self::EVENT_ID,
+					'title'       => self::EVENT_NAME,
+					'description' => '',
+					'starts_at'   => $now,
+					'ends_at'     => null,
+					'status'      => 'draft',
+					'created_at'  => $now,
+					'updated_at'  => $now,
+				]
+			);
+		}
+
+		private static function upsert_event( $event ) {
+			global $wpdb;
+			$defaults = [
+				'id'          => self::EVENT_ID,
+				'title'       => self::EVENT_NAME,
+				'description' => '',
+				'starts_at'   => self::now_utc(),
+				'ends_at'     => null,
+				'status'      => 'draft',
+				'created_at'  => self::now_utc(),
+				'updated_at'  => self::now_utc(),
+			];
+
+			$data = array_merge( $defaults, $event );
+
+			return (bool) $wpdb->replace(
+				self::events_table(),
+				[
+					'id'          => (int) $data['id'],
+					'title'       => $data['title'],
+					'description' => $data['description'],
+					'starts_at'   => $data['starts_at'],
+					'ends_at'     => $data['ends_at'],
+					'status'      => $data['status'],
+					'created_at'  => $data['created_at'],
+					'updated_at'  => $data['updated_at'],
+				],
+				[ '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
+			);
+		}
+
+		private static function get_event( $event_id ) {
+			global $wpdb;
+			$row = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, title, description, starts_at, ends_at, status, created_at, updated_at FROM " . self::events_table() . " WHERE id = %d LIMIT 1",
+					$event_id
+				),
+				ARRAY_A
+			);
+
+			if ( ! $row ) {
+				return null;
+			}
+
+			return [
+				'id'          => (int) $row['id'],
+				'title'       => $row['title'],
+				'description' => $row['description'],
+				'starts_at'   => $row['starts_at'],
+				'ends_at'     => $row['ends_at'],
+				'status'      => $row['status'],
+				'created_at'  => $row['created_at'],
+				'updated_at'  => $row['updated_at'],
+			];
+		}
+
+		private static function get_slots_by_event( $event_id ) {
+			$slots = [];
+			foreach ( self::get_slots() as $slot ) {
+				if ( isset( $slot['event_id'] ) && (int) $slot['event_id'] === (int) $event_id ) {
+					$slots[] = $slot;
+				}
+			}
+			return $slots;
+		}
+
+		private static function build_event_snapshot( $event_id, $identity_key ) {
+			global $wpdb;
+
+			$events_table  = self::events_table();
+			$slots_table   = self::slots_table();
+			$signups_table = self::signups_table();
+
+			if ( $identity_key ) {
+				$identity_condition = $wpdb->prepare( 'AND su.identity_key = %s', $identity_key );
+			} else {
+				$identity_condition = 'AND 1=0';
+			}
+
+			$sql = "
+SELECT
+	e.id AS event_id,
+	e.title,
+	e.description,
+	e.starts_at,
+	e.ends_at,
+	e.status AS event_status,
+	e.created_at AS event_created_at,
+	e.updated_at AS event_updated_at,
+	s.id AS slot_id,
+	s.capacity,
+	s.remaining,
+	s.max_qty,
+	s.cutoff_at,
+	s.locked,
+	s.event_id,
+	su.id AS signup_id,
+	su.identity_type,
+	su.identity_key,
+	su.qty,
+	su.status AS signup_status,
+	su.created_at AS signup_created,
+	su.updated_at AS signup_updated
+FROM {$events_table} e
+LEFT JOIN {$slots_table} s ON s.event_id = e.id
+LEFT JOIN {$signups_table} su ON su.slot_id = s.id {$identity_condition}
+WHERE e.id = %d
+ORDER BY s.id ASC
+";
+
+			$rows = $wpdb->get_results( $wpdb->prepare( $sql, $event_id ), ARRAY_A );
+			if ( empty( $rows ) ) {
+				return null;
+			}
+
+			$event        = null;
+			$slots        = [];
+			$my_signups   = [];
+			$recorded_ids = [];
+
+			foreach ( $rows as $row ) {
+				if ( ! $event ) {
+					$event = [
+						'id'          => (int) $row['event_id'],
+						'title'       => $row['title'],
+						'description' => $row['description'],
+						'starts_at'   => $row['starts_at'],
+						'ends_at'     => $row['ends_at'],
+						'status'      => $row['event_status'],
+						'created_at'  => $row['event_created_at'],
+						'updated_at'  => $row['event_updated_at'],
+					];
+				}
+
+				if ( $row['slot_id'] ) {
+					$availability = self::availability_snapshot( $row['slot_id'] );
+
+					$has_signup = ! empty( $row['signup_id'] );
+					$can_edit   = $has_signup && 'confirmed' === $row['signup_status'];
+					$can_cancel = $can_edit;
+					$can_claim  = $has_signup && 'guest' === $row['identity_type'] && 'confirmed' === $row['signup_status'];
+
+					$slots[] = [
+						'slot_id'      => (int) $row['slot_id'],
+						'capacity'     => (int) $row['capacity'],
+						'remaining'    => (int) $row['remaining'],
+						'max_qty'      => isset( $row['max_qty'] ) ? (int) $row['max_qty'] : null,
+						'cutoff_at'    => $row['cutoff_at'],
+						'locked'       => (bool) $row['locked'],
+						'availability' => $availability,
+						'can_signup'   => $availability['can_signup'],
+						'can_edit'     => $can_edit,
+						'can_cancel'   => $can_cancel,
+						'can_claim'    => $can_claim,
+						'reason'       => $availability['reason'],
+					];
+				}
+
+				if ( $has_signup && ! isset( $recorded_ids[ $row['signup_id'] ] ) ) {
+					$my_signups[] = [
+						'id'           => $row['signup_id'],
+						'slot_id'      => (int) $row['slot_id'],
+						'identity_type'=> $row['identity_type'],
+						'identity_key' => $row['identity_key'],
+						'qty'          => (int) $row['qty'],
+						'status'       => $row['signup_status'],
+						'can_edit'     => $can_edit,
+						'can_cancel'   => $can_cancel,
+						'can_claim'    => $can_claim,
+						'created_at'   => $row['signup_created'],
+						'updated_at'   => $row['signup_updated'],
+					];
+					$recorded_ids[ $row['signup_id'] ] = true;
+				}
+			}
+
+			if ( $event ) {
+				$event['slots'] = $slots;
+			}
+
+			return [
+				'event'      => $event,
+				'my_signups' => $my_signups,
+			];
 		}
 
 		private static function now_utc() {
@@ -184,6 +432,7 @@ CREATE TABLE {$signups_table} (
 			global $wpdb;
 			$wpdb->query( "DELETE FROM " . self::signups_table() );
 			$wpdb->query( "DELETE FROM " . self::slots_table() );
+			$wpdb->query( "DELETE FROM " . self::events_table() );
 
 			self::upsert_slot(
 				[
@@ -196,6 +445,8 @@ CREATE TABLE {$signups_table} (
 					'cutoff'    => null,
 				]
 			);
+
+			self::ensure_default_event();
 
 			return new WP_REST_Response(
 				[ 'ok' => true ],
@@ -355,42 +606,17 @@ CREATE TABLE {$signups_table} (
 		}
 
 		final public static function handle_event_snapshot( WP_REST_Request $request ) {
-			$event_id = (int) $request['event_id'];
-			if ( $event_id !== self::EVENT_ID ) {
-				return self::error_response( 404, 'EVENT_NOT_FOUND', 'Event not found.', [] );
-			}
-
-			$slots = [];
-			foreach ( self::get_slots() as $slot ) {
-				$slots[] = array_merge(
-					$slot,
-					[
-						'availability' => self::availability_snapshot( $slot['id'] ),
-					]
-				);
-			}
-
+			$event_id     = (int) $request['event_id'];
 			$identity_key = self::resolve_identity_key( $request );
-			$my_signups   = [];
+			$snapshot     = self::build_event_snapshot( $event_id, $identity_key );
 
-			if ( $identity_key ) {
-				foreach ( self::get_signups() as $signup ) {
-					if ( $signup['identity_key'] === $identity_key ) {
-						$my_signups[] = $signup;
-					}
-				}
+			if ( ! $snapshot ) {
+				return self::error_response( 404, 'EVENT_NOT_FOUND', 'Event not found.', [] );
 			}
 
 			return rest_ensure_response(
 				[
-					'data' => [
-						'event'      => [
-							'id'    => self::EVENT_ID,
-							'name'  => self::EVENT_NAME,
-							'slots' => $slots,
-						],
-						'my_signups' => $my_signups,
-					],
+					'data'   => $snapshot,
 					'errors' => [],
 				]
 			);

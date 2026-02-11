@@ -191,8 +191,13 @@ describe('GET /event-planning/v1/events/:eventId (contract)', () => {
         expect(response.status).toBe(200);
         expect(response.body.errors).toEqual([]);
         expect(response.body.data.event.id).toBe(1);
-        expect(response.body.data.event.slots[0].id).toBe(12);
-        expect(response.body.data.event.slots[0].availability.remaining).toBe(5);
+        const slot = response.body.data.event.slots[0];
+        expect(slot.slot_id).toBe(12);
+        expect(slot.capacity).toBe(10);
+        expect(slot.availability.remaining).toBe(5);
+        expect(slot.can_signup).toBe(true);
+        expect(slot.can_cancel).toBe(false);
+        expect(slot.can_edit).toBe(false);
         expect(response.body.data.my_signups).toEqual([]);
     });
 
@@ -208,9 +213,16 @@ describe('GET /event-planning/v1/events/:eventId (contract)', () => {
             .query({ guest_email: 'reader@example.com' });
 
         expect(response.status).toBe(200);
-        expect(response.body.data.event.slots[0].availability.remaining).toBe(4);
+        const slot = response.body.data.event.slots[0];
+        expect(slot.availability.remaining).toBe(4);
+        expect(slot.can_signup).toBe(true);
+        expect(slot.can_cancel).toBe(true);
+        expect(slot.can_edit).toBe(true);
         expect(response.body.data.my_signups).toHaveLength(1);
-        expect(response.body.data.my_signups[0].identity_key).toContain('guest:reader@example.com');
+        const signup = response.body.data.my_signups[0];
+        expect(signup.identity_key).toContain('guest:reader@example.com');
+        expect(signup.can_cancel).toBe(true);
+        expect(signup.can_edit).toBe(true);
     });
 
     it('returns 404 when the event id is invalid', async () => {
