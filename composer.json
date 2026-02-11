@@ -1,0 +1,19 @@
+{
+    "name": "bc-web-studio/event-planning",
+    "description": "Event Planning plugin + contract tests",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "BC Web Studio",
+            "email": "belinda.caylor+dev@gmail.com"
+        }
+    ],
+    "config": {
+        "audit": {
+            "block-insecure": false
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "10.5"
+    }
+}

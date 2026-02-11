@@ -45,3 +45,5 @@ coverage/
 # Temporary files
 *.tmp
 *.swp
+
+/vendor/
